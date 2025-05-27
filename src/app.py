@@ -15,6 +15,13 @@ from dotenv import load_dotenv
 from tkinter import scrolledtext
 import threading
 import time
+import sys
+import traceback
+
+# Import custom modules
+from audio_recorder import AudioRecorder
+from transcriber import Transcriber
+from fix_mac_certificates import fix_mac_certificates
 
 # Load environment variables from .env file
 load_dotenv()
@@ -42,15 +49,35 @@ class MeetingAssistantApp:
         
         # Recording state
         self.is_recording = False
+        self.audio_file = None
+        self.model_loaded = False
         
         # Set up the UI components
         self._setup_ui()
         
-        # Status bar for showing app state
+        # Status bar for showing app state - create this before starting any async operations
         self._create_status_bar()
+        self._update_status("Initializing... Loading speech recognition model...")
         
-        # Update the status message
-        self._update_status("Ready. Press 'Listen to question' to start recording.")
+        # Initialize audio recorder and transcriber
+        # Try to fix SSL certificate issues on macOS
+        cert_fixed = fix_mac_certificates()
+        if not cert_fixed:
+            messagebox.showwarning(
+                "SSL Certificate Warning",
+                """Python certificate verification may fail. The application will try to use
+an unverified context for downloading models, which is less secure.
+
+For proper security, consider one of these solutions:
+1. Install certifi: pip install certifi
+2. Run the macOS certificate installation script"""
+            )
+        
+        self.audio_recorder = AudioRecorder(sample_rate=16000)
+        self.transcriber = Transcriber(model_name="tiny")
+        
+        # Now that status_bar exists, load the Whisper model in the background
+        self.transcriber.load_model(callback=self._on_model_loaded)
     
     def _configure_styles(self):
         """Configure custom styles for the application."""
@@ -120,6 +147,9 @@ class MeetingAssistantApp:
             style="Record.TButton"
         )
         self.record_button.pack(pady=15)  # Increased padding
+        
+        # Initially disable the record button until the model is loaded
+        self.record_button.state(["disabled"])
         
         # Text box for displaying transcribed text
         self.text_frame = ttk.LabelFrame(content_frame, text="Question Text")
@@ -250,11 +280,57 @@ class MeetingAssistantApp:
             self.ok_button.state(["!disabled"])
             self.record_button.state(["!disabled"])
     
-    def _record_audio(self):
-        """Record audio from the microphone.
+    def _on_model_loaded(self, success):
+        """Callback for when the Whisper model is loaded.
         
-        This is a placeholder. Actual implementation will be added in Task 3.
+        Args:
+            success: Boolean indicating if the model loaded successfully
         """
+        if success:
+            self.model_loaded = True
+            self._update_status("Ready. Press 'Listen to question' to start recording.")
+            self.record_button.state(["!disabled"])
+        else:
+            self._update_status("Error loading speech recognition model. Check console for details.")
+            messagebox.showerror(
+                "Model Loading Error", 
+                "Failed to load the speech recognition model. Please restart the application."
+            )
+    
+    def _on_transcription_complete(self, text):
+        """Callback for when transcription is complete.
+        
+        Args:
+            text: The transcribed text or None if an error occurred
+        """
+        if text is not None:
+            # Update the text box with the transcribed text
+            self.text_box.delete(1.0, tk.END)
+            self.text_box.insert(tk.END, text)
+            self._update_status("Transcription complete. Edit the text if needed.")
+        else:
+            self._update_status("Error transcribing audio. Please try again.")
+            messagebox.showerror(
+                "Transcription Error", 
+                "Failed to transcribe the audio. Please try recording again."
+            )
+        
+        # Hide processing indicator
+        self._show_processing(False)
+        
+        # Enable the record button
+        self.record_button.state(["!disabled"])
+    
+    def _record_audio(self):
+        """Record audio from the microphone and transcribe it."""
+        # Check if the model is loaded
+        if not self.model_loaded:
+            messagebox.showinfo(
+                "Model Loading", 
+                "Please wait for the speech recognition model to finish loading."
+            )
+            return
+        
         # Toggle recording state
         self.is_recording = not self.is_recording
         
@@ -263,26 +339,60 @@ class MeetingAssistantApp:
             self.record_button.configure(text="⏹️ Stop Recording")
             self._update_status("Recording... Speak now.")
             
-            # Simulate recording with a progress indicator
-            self._show_processing(True)
-            
-            # This would normally start a real recording thread
-            # For now, we'll simulate it with a timer
-            self.root.after(3000, self._finish_recording)
+            # Start actual recording
+            success = self.audio_recorder.start_recording(max_duration=20)
+            if not success:
+                self.is_recording = False
+                self.record_button.configure(text="🎙️ Listen to question")
+                self._update_status("Error starting recording. Please try again.")
+                messagebox.showerror(
+                    "Recording Error", 
+                    "Failed to start recording. Please check your microphone and try again."
+                )
         else:
             # User manually stopped recording
             self._finish_recording()
     
     def _finish_recording(self):
-        """Finish the recording process and update the UI."""
+        """Finish the recording process and start transcription."""
+        # Stop recording state
         self.is_recording = False
         self.record_button.configure(text="🎙️ Listen to question")
-        self._show_processing(False)
-        self._update_status("Recording finished. Question text appears below.")
         
-        # Update the text box with placeholder text
-        self.text_box.delete(1.0, tk.END)
-        self.text_box.insert(tk.END, "[Placeholder] What is the capital of France?")
+        # Show processing indicator
+        self._show_processing(True)
+        
+        # Temporarily disable the record button during processing
+        self.record_button.state(["disabled"])
+        
+        # Stop the recording and get the audio file
+        self.audio_file = self.audio_recorder.stop_recording()
+        
+        if self.audio_file:
+            self._update_status("Recording finished. Transcribing audio...")
+            
+            # Start transcription
+            success = self.transcriber.transcribe(
+                self.audio_file,
+                callback=self._on_transcription_complete
+            )
+            
+            if not success:
+                self._update_status("Error starting transcription. Please try again.")
+                self._show_processing(False)
+                self.record_button.state(["!disabled"])
+                messagebox.showerror(
+                    "Transcription Error", 
+                    "Failed to start transcription. Please try recording again."
+                )
+        else:
+            self._update_status("Error saving recording. Please try again.")
+            self._show_processing(False)
+            self.record_button.state(["!disabled"])
+            messagebox.showerror(
+                "Recording Error", 
+                "Failed to save the recording. Please try again."
+            )
     
     def _process_question(self):
         """Process the question text and generate an answer.
