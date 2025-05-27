@@ -1,0 +1,7 @@
+openai>=1.0.0
+sounddevice
+numpy
+openai-whisper
+googletrans==4.0.0-rc1
+python-dotenv
+pytest
