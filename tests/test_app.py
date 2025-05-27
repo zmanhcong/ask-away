@@ -6,11 +6,11 @@ Unit tests for the Meeting Question Assistant application.
 """
 
 import unittest
-import tkinter as tk
-from unittest.mock import patch, MagicMock
-import sys
 import os
-import time
+import unittest
+from unittest.mock import MagicMock, patch, ANY
+import tkinter as tk
+from src.app import MeetingAssistantApp
 import threading
 
 # Add the src directory to the path so we can import the app module
@@ -164,6 +164,79 @@ class TestMeetingAssistantApp(unittest.TestCase):
         
         # Verify recording state
         self.assertFalse(self.app.is_recording)
+    
+    def test_record_audio(self):
+        """Test recording audio function."""
+        # Set model as loaded
+        self.app.model_loaded = True
+        
+        # Mock methods to prevent actual recording
+        self.app.audio_recorder.start_recording = MagicMock(return_value=True)
+        self.app.audio_recorder.stop_recording = MagicMock(return_value="test.wav")
+        
+        # Start recording
+        self.app._record_audio()
+        
+        # Verify recording was started
+        self.assertTrue(self.app.is_recording)
+        self.app.audio_recorder.start_recording.assert_called_once()
+        
+        # Verify the start_recording was called with chunk_callback parameter
+        # Using ANY matcher for max_duration since it's not the focus of this test
+        self.app.audio_recorder.start_recording.assert_called_with(
+            max_duration=ANY, 
+            chunk_callback=self.app._process_audio_chunk
+        )
+        
+        # Stop recording
+        self.app._record_audio()
+        
+        # Verify recording was stopped
+        self.assertFalse(self.app.is_recording)
+        self.app.audio_recorder.stop_recording.assert_called_once()
+    
+    def test_process_audio_chunk(self):
+        """Test processing of audio chunks."""
+        # Set up recording state
+        self.app.is_recording = True
+        
+        # Mock the transcriber.transcribe method
+        self.app.transcriber.transcribe = MagicMock(return_value="chunk_id_123")
+        
+        # Mock os.path.exists to return True
+        with patch('os.path.exists', return_value=True):
+            # Call the method
+            self.app._process_audio_chunk("test_chunk.wav")
+            
+            # Verify the transcribe method was called with the right parameters
+            self.app.transcriber.transcribe.assert_called_once()
+            self.app.transcriber.transcribe.assert_called_with(
+                "test_chunk.wav", 
+                callback=self.app._on_chunk_transcription_complete,
+                is_chunk=True,
+                chunk_id=ANY  # We don't care about the exact ID, just that one was provided
+            )
+    
+    def test_on_chunk_transcription_complete(self):
+        """Test the callback for chunk transcription completion."""
+        # Set up the text_box
+        self.app.text_box = MagicMock()
+        self.app.text_box.get.return_value = "Existing text. "
+        
+        # Mock the _update_status method
+        self.app._update_status = MagicMock()
+        
+        # Call the method with a successful transcription
+        self.app._on_chunk_transcription_complete("New transcribed text", True, "chunk_id_123")
+        
+        # Verify the text was added to the text_box
+        self.app.text_box.insert.assert_called_with(tk.END, " New transcribed text")
+        
+        # Verify the text box was scrolled to the end
+        self.app.text_box.see.assert_called_with(tk.END)
+        
+        # Verify status was updated
+        self.app._update_status.assert_called_with("Transcribing audio...")
     
     def test_finish_recording_success(self):
         """Test successfully finishing recording and starting transcription."""

@@ -23,11 +23,11 @@ class TestTranscriber(unittest.TestCase):
     def setUp(self):
         """Set up the test environment before each test."""
         with patch('whisper.load_model'):
-            self.transcriber = Transcriber(model_name="tiny")
+            self.transcriber = Transcriber(model_name="large")
     
     def test_initialization(self):
         """Test that the Transcriber initializes correctly."""
-        self.assertEqual(self.transcriber.model_name, "tiny")
+        self.assertEqual(self.transcriber.model_name, "large")
         self.assertFalse(self.transcriber.is_loaded)
         self.assertFalse(self.transcriber.is_transcribing)
         self.assertIsNone(self.transcriber.model)
@@ -121,6 +121,58 @@ class TestTranscriber(unittest.TestCase):
         self.assertEqual(self.transcriber._callback, test_callback)
         mock_thread.assert_called_once()
         mock_thread.return_value.start.assert_called_once()
+    
+    def test_transcribe(self):
+        """Test transcribing an audio file."""
+        # Mock the model and transcribe method
+        mock_result = {"text": "test transcription"}
+        self.transcriber.model = MagicMock()
+        self.transcriber.model.transcribe.return_value = mock_result
+        self.transcriber.is_loaded = True
+        
+        # Create a mock callback
+        mock_callback = MagicMock()
+        
+        # Mock the os.path.exists function to return True
+        with patch('os.path.exists', return_value=True):
+            # Call the method
+            transcription_id = self.transcriber.transcribe("test.wav", callback=mock_callback)
+            
+            # Verify a valid transcription ID was returned
+            self.assertIsNotNone(transcription_id)
+            
+            # Verify the transcription was tracked
+            self.assertIn(transcription_id, self.transcriber.active_transcriptions)
+            
+    def test_transcribe_chunk(self):
+        """Test transcribing an audio chunk."""
+        # Mock the model and transcribe method
+        mock_result = {"text": "chunk transcription"}
+        self.transcriber.model = MagicMock()
+        self.transcriber.model.transcribe.return_value = mock_result
+        self.transcriber.is_loaded = True
+        
+        # Create a mock callback
+        mock_callback = MagicMock()
+        
+        # Set a specific chunk ID
+        chunk_id = "test_chunk_123"
+        
+        # Mock the os.path.exists function to return True
+        with patch('os.path.exists', return_value=True):
+            # Call the method with chunk parameters
+            result_id = self.transcriber.transcribe(
+                "chunk.wav", 
+                callback=mock_callback, 
+                is_chunk=True, 
+                chunk_id=chunk_id
+            )
+            
+            # Verify the returned ID matches the chunk ID
+            self.assertEqual(result_id, chunk_id)
+            
+            # Verify the transcription was tracked
+            self.assertIn(chunk_id, self.transcriber.active_transcriptions)
     
     def test_get_last_result(self):
         """Test getting the last transcription result."""

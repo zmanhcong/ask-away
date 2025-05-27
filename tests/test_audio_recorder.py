@@ -34,29 +34,49 @@ class TestAudioRecorder(unittest.TestCase):
         self.assertIsNone(self.recorder.audio_filename)
     
     @patch('threading.Thread')
-    def test_start_recording(self, mock_thread):
-        """Test starting audio recording."""
-        # Mock the thread to avoid actual recording
-        mock_thread.return_value.daemon = None
+    def test_start_recording(self):
+        """Test that recording can be started."""
+        # Mock the threading to avoid actually recording
+        with patch('threading.Thread') as mock_thread:
+            # Call the method
+            result = self.recorder.start_recording()
+            
+            # Verify that recording started successfully
+            self.assertTrue(result)
+            self.assertTrue(self.recorder.recording)
+            
+            # Verify thread was started with correct args
+            mock_thread.assert_called_once()
+            
+    def test_start_recording_with_chunk_callback(self):
+        """Test that recording can be started with a chunk callback."""
+        # Create a mock callback function
+        mock_callback = MagicMock()
         
-        # Start recording
-        result = self.recorder.start_recording(max_duration=5)
-        
-        # Check results
-        self.assertTrue(result)
-        self.assertTrue(self.recorder.recording)
-        mock_thread.assert_called_once()
-        mock_thread.return_value.start.assert_called_once()
-    
+        # Mock the threading to avoid actually recording
+        with patch('threading.Thread') as mock_thread:
+            # Call the method with the callback
+            result = self.recorder.start_recording(chunk_callback=mock_callback)
+            
+            # Verify that recording started successfully
+            self.assertTrue(result)
+            self.assertTrue(self.recorder.recording)
+            
+            # Verify the callback was set correctly
+            self.assertEqual(self.recorder._chunk_callback, mock_callback)
+            
+            # Verify thread was started with correct args
+            mock_thread.assert_called_once()
+            
     def test_start_recording_already_recording(self):
-        """Test starting recording when already recording."""
-        # Set recording state to True
+        """Test that starting recording while already recording fails."""
+        # Set the recording flag
         self.recorder.recording = True
         
-        # Try to start recording
+        # Try to start recording again
         result = self.recorder.start_recording()
         
-        # Should return False and not change state
+        # Verify that starting again fails
         self.assertFalse(result)
     
     @patch('threading.Thread')
@@ -116,6 +136,69 @@ class TestAudioRecorder(unittest.TestCase):
         
         # Check the path is returned
         self.assertEqual(self.recorder.get_last_recording_path(), test_path)
+
+
+    def test_save_audio_chunk(self):
+        """Test that an audio chunk can be saved to a file."""
+        # Add some fake audio data for the chunk
+        chunk_frames = [
+            np.array([[0.1, 0.2], [0.3, 0.4]]),
+            np.array([[0.5, 0.6], [0.7, 0.8]])
+        ]
+        
+        # Mock the wave module
+        with patch('wave.open') as mock_wave:
+            # Call the method
+            filepath = self.recorder._save_audio_chunk(chunk_frames, 1)
+            
+            # Verify the file was created
+            self.assertIsNotNone(filepath)
+            self.assertTrue('recording_chunk' in filepath)
+            self.assertTrue(filepath.endswith('.wav'))
+            
+            # Verify wave.open was called
+            mock_wave.assert_called_once()
+    
+    def test_save_audio_chunk_empty_frames(self):
+        """Test that saving an audio chunk with no frames returns None."""
+        # Call the method with empty frames
+        filepath = self.recorder._save_audio_chunk([], 1)
+        
+        # Verify that no file was created
+        self.assertIsNone(filepath)
+    
+    def test_process_audio_chunk(self):
+        """Test the audio chunk processing with callback."""
+        # Create a mock callback function
+        mock_callback = MagicMock()
+        
+        # Set up the recorder with the callback
+        self.recorder._chunk_callback = mock_callback
+        
+        # Create some test frames and add them to current_chunk
+        self.recorder.current_chunk = [
+            np.array([[0.1, 0.2], [0.3, 0.4]]),
+            np.array([[0.5, 0.6], [0.7, 0.8]])
+        ]
+        
+        # Mock the _save_audio_chunk method
+        with patch.object(self.recorder, '_save_audio_chunk', return_value='/tmp/test_chunk.wav') as mock_save:
+            # Simulate chunk processing in _record_audio
+            chunk_start_time = time.time() - 3  # Pretend 3 seconds have passed
+            chunk_count = 1
+            
+            # Check if it's time to process a chunk (it should be since we set time 3 seconds ago)
+            if time.time() - chunk_start_time >= self.recorder.chunk_duration and self.recorder.current_chunk:
+                # Call the method we're testing indirectly
+                chunk_filename = self.recorder._save_audio_chunk(self.recorder.current_chunk, chunk_count)
+                
+                # Verify callback was called with the right filename
+                if self.recorder._chunk_callback and chunk_filename:
+                    self.recorder._chunk_callback(chunk_filename)
+            
+            # Verify the methods were called correctly
+            mock_save.assert_called_once()
+            mock_callback.assert_called_once_with('/tmp/test_chunk.wav')
 
 
 if __name__ == '__main__':

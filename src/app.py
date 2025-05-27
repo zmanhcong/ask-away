@@ -74,7 +74,7 @@ For proper security, consider one of these solutions:
             )
         
         self.audio_recorder = AudioRecorder(sample_rate=16000)
-        self.transcriber = Transcriber(model_name="tiny")
+        self.transcriber = Transcriber(model_name="large")
         
         # Now that status_bar exists, load the Whisper model in the background
         self.transcriber.load_model(callback=self._on_model_loaded)
@@ -317,82 +317,235 @@ For proper security, consider one of these solutions:
         
         # Hide processing indicator
         self._show_processing(False)
-        
-        # Enable the record button
-        self.record_button.state(["!disabled"])
-    
     def _record_audio(self):
-        """Record audio from the microphone and transcribe it."""
-        # Check if the model is loaded
+        """Start or stop audio recording with continuous transcription."""
         if not self.model_loaded:
-            messagebox.showinfo(
-                "Model Loading", 
-                "Please wait for the speech recognition model to finish loading."
-            )
+            messagebox.showinfo("Model Loading", "Please wait for the speech recognition model to finish loading.")
             return
         
-        # Toggle recording state
         self.is_recording = not self.is_recording
         
         if self.is_recording:
+            print(f"[APP] Starting recording. Model: {self.transcriber.model_name}, Language: {self.language_var.get()}")
             # Start recording
-            self.record_button.configure(text="⏹️ Stop Recording")
-            self._update_status("Recording... Speak now.")
-            
-            # Start actual recording
-            success = self.audio_recorder.start_recording(max_duration=20)
-            if not success:
+            try:
+                self.record_button.config(text="Stop Recording")
+                self._update_status("Recording audio... (Press again to stop)")
+                
+                # Clear the text box for new recording
+                self.text_box.delete(1.0, tk.END)
+                
+                # Start the audio recording with chunk processing
+                success = self.audio_recorder.start_recording(
+                    max_duration=300,  # 5 minutes max
+                    chunk_callback=self._process_audio_chunk
+                )
+                
+                if not success:
+                    self.is_recording = False
+                    self.record_button.config(text="Record Audio")
+                    self._update_status("Error: Could not start recording. Check microphone access.")
+                    messagebox.showerror("Recording Error", 
+                                       "Could not start recording. Please check your microphone and try again.")
+                
+            except Exception as e:
                 self.is_recording = False
-                self.record_button.configure(text="🎙️ Listen to question")
-                self._update_status("Error starting recording. Please try again.")
-                messagebox.showerror(
-                    "Recording Error", 
-                    "Failed to start recording. Please check your microphone and try again."
-                )
+                self.record_button.config(text="Record Audio")
+                error_msg = f"Error starting recording: {str(e)}"
+                print(error_msg)
+                self._update_status("Error: Could not start recording")
+                messagebox.showerror("Recording Error", error_msg)
+            
         else:
-            # User manually stopped recording
-            self._finish_recording()
+            # Stop recording and process any remaining audio
+            try:
+                self.record_button.config(state="disabled")  # Disable button while stopping
+                self._update_status("Finalizing recording...")
+                
+                # Stop the recording and get the audio file path
+                audio_file = self.audio_recorder.stop_recording()
+                
+                if audio_file:
+                    self._update_status("Recording completed. Processing final audio...")
+                    # Process the complete recording if needed
+                    self.root.after(100, self._process_complete_recording, audio_file)
+                else:
+                    self._update_status("Recording completed. No audio was captured.")
+                    
+            except Exception as e:
+                error_msg = f"Error stopping recording: {str(e)}"
+                print(error_msg)
+                self._update_status("Error stopping recording")
+                messagebox.showerror("Recording Error", error_msg)
+            finally:
+                self.record_button.config(state="normal")
+                self.record_button.config(text="Record Audio")
     
-    def _finish_recording(self):
-        """Finish the recording process and start transcription."""
-        # Stop recording state
-        self.is_recording = False
-        self.record_button.configure(text="🎙️ Listen to question")
+    def _process_audio_chunk(self, chunk_file):
+        """Process an audio chunk as it becomes available.
         
-        # Show processing indicator
-        self._show_processing(True)
-        
-        # Temporarily disable the record button during processing
-        self.record_button.state(["disabled"])
-        
-        # Stop the recording and get the audio file
-        self.audio_file = self.audio_recorder.stop_recording()
-        
-        if self.audio_file:
-            self._update_status("Recording finished. Transcribing audio...")
+        Args:
+            chunk_file: Path to the audio chunk file
+        """
+        if not self.is_recording:
+            return
             
-            # Start transcription
-            success = self.transcriber.transcribe(
-                self.audio_file,
-                callback=self._on_transcription_complete
+        try:
+            # Skip if file doesn't exist or is empty
+            if not chunk_file or not os.path.exists(chunk_file):
+                print(f"Chunk file not found: {chunk_file}")
+                return
+                
+            file_size = os.path.getsize(chunk_file)
+            if file_size == 0:
+                print(f"Skipping empty chunk file: {chunk_file}")
+                try:
+                    os.remove(chunk_file)
+                except Exception as e:
+                    print(f"Error removing empty chunk file: {e}")
+                return
+                
+            # Generate a unique ID for this chunk
+            chunk_id = f"chunk_{int(time.time() * 1000)}_{os.getpid()}"
+            
+            # Update status to show we're processing this chunk
+            self.root.after(0, self._update_status, "Processing audio chunk...")
+            
+            # Verify the file is a valid audio file by checking its size
+            if file_size < 1024:  # Less than 1KB is likely not a valid audio file
+                print(f"Chunk file too small to process: {chunk_file} ({file_size} bytes)")
+                return
+                
+            # Transcribe the chunk in a separate thread
+            print(f"Starting transcription for chunk: {chunk_file}")
+            self.transcriber.transcribe(
+                chunk_file, 
+                callback=self._on_chunk_transcription_complete,
+                is_chunk=True,
+                chunk_id=chunk_id
             )
             
-            if not success:
-                self._update_status("Error starting transcription. Please try again.")
-                self._show_processing(False)
-                self.record_button.state(["!disabled"])
-                messagebox.showerror(
-                    "Transcription Error", 
-                    "Failed to start transcription. Please try recording again."
-                )
-        else:
-            self._update_status("Error saving recording. Please try again.")
-            self._show_processing(False)
-            self.record_button.state(["!disabled"])
-            messagebox.showerror(
-                "Recording Error", 
-                "Failed to save the recording. Please try again."
-            )
+        except Exception as e:
+            error_msg = f"Error processing audio chunk: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            
+            # Try to clean up the chunk file
+            try:
+                if chunk_file and os.path.exists(chunk_file):
+                    os.remove(chunk_file)
+            except Exception as e:
+                print(f"Error removing chunk file after error: {e}")
+    
+    def _on_chunk_transcription_complete(self, text, success, chunk_id=None):
+        """Callback for when a chunk's transcription is complete.
+        
+        Args:
+            text: The transcribed text or error message. An empty string indicates a silent/empty chunk.
+            success: Whether the transcription was successful
+            chunk_id: ID of the chunk that was transcribed
+        """
+        try:
+            # Skip if not successful or if text is None (None indicates an error)
+            if not success or text is None:
+                print(f"Transcription failed for chunk {chunk_id}")
+                self.root.after(0, self._update_status, "Error transcribing audio chunk")
+                return
+                
+            # Empty text means silent/empty chunk - we can skip updating the UI
+            if not text.strip():
+                print(f"Empty transcription for chunk {chunk_id} (silent/empty chunk)")
+                return
+                
+            print(f"Got transcription for chunk {chunk_id}: {text[:50]}...")
+            
+            # Update the UI in the main thread
+            self.root.after(0, self._process_transcription, text)
+            
+        except Exception as e:
+            error_msg = f"Error in transcription callback: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+    
+    def _process_transcription(self, text):
+        """Process the transcribed text and update the UI.
+        
+        Args:
+            text: The transcribed text to add to the text box
+        """
+        try:
+            # Get current text
+            current_text = self.text_box.get(1.0, tk.END).strip()
+            
+            # Update the text box
+            self._update_text_box(current_text, text)
+            
+            # Update status to show the last transcription time
+            timestamp = time.strftime("%H:%M:%S")
+            self._update_status(f"Last update at {timestamp}")
+            
+        except Exception as e:
+            print(f"Error processing transcription: {e}")
+    
+    def _process_complete_recording(self, audio_file):
+        """Process the complete recording after stopping.
+        
+        Args:
+            audio_file: Path to the complete audio file
+        """
+        try:
+            if not audio_file or not os.path.exists(audio_file):
+                self._update_status("Error: Complete recording file not found")
+                return
+                
+            file_size = os.path.getsize(audio_file)
+            if file_size < 1024:  # Less than 1KB is likely not a valid audio file
+                self._update_status("Recording completed. No speech detected.")
+                return
+                
+            # Process the complete recording if needed
+            self._update_status("Processing complete recording...")
+            print(f"Processing complete recording: {audio_file}")
+            
+            # You can add additional processing here if needed
+            # For example, you might want to transcribe the complete recording
+            # for better accuracy
+            
+            self._update_status("Recording processing complete")
+            
+        except Exception as e:
+            error_msg = f"Error processing complete recording: {str(e)}"
+            print(error_msg)
+            self._update_status("Error processing recording")
+    
+    def _update_text_box(self, current_text, new_text):
+        """Update the text box with new transcribed text.
+        
+        Args:
+            current_text: The current text in the text box
+            new_text: The new text to append
+        """
+        try:
+            # If there's existing text, add a space before appending
+            if current_text:
+                self.text_box.insert(tk.END, " " + new_text)
+            else:
+                self.text_box.insert(tk.END, new_text)
+            
+            # Scroll to the end
+            self.text_box.see(tk.END)
+            
+            # Ensure the UI updates immediately
+            self.text_box.update_idletasks()
+            
+            # Update status
+            self._update_status("Transcribing audio...")
+        except Exception as e:
+            print(f"Error updating text box: {e}")
+            # Re-raise the exception to handle it in the calling function
+            raise
     
     def _process_question(self):
         """Process the question text and generate an answer.
