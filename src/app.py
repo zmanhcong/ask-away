@@ -74,7 +74,9 @@ For proper security, consider one of these solutions:
             )
         
         self.audio_recorder = AudioRecorder(sample_rate=16000)
-        self.transcriber = Transcriber(model_name="tiny")
+        import os
+        whisper_model = os.getenv("WHISPER_MODEL", "medium")
+        self.transcriber = Transcriber(model_name=whisper_model)
         
         # Now that status_bar exists, load the Whisper model in the background
         self.transcriber.load_model(callback=self._on_model_loaded)
@@ -340,7 +342,7 @@ For proper security, consider one of these solutions:
             self._update_status("Recording... Speak now.")
             
             # Start actual recording
-            success = self.audio_recorder.start_recording(max_duration=20)
+            success = self.audio_recorder.start_recording(max_duration=60)
             if not success:
                 self.is_recording = False
                 self.record_button.configure(text="🎙️ Listen to question")

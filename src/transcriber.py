@@ -19,7 +19,10 @@ import sys
 class Transcriber:
     """Class for transcribing audio to text using Whisper."""
     
-    def __init__(self, model_name="tiny", local_model_path=None):
+    def __init__(self, model_name=None, local_model_path=None):
+        import os
+        if model_name is None:
+            model_name = os.getenv("WHISPER_MODEL", "medium")
         """Initialize the transcriber with the specified model.
         
         Args:

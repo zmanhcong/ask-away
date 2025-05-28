@@ -23,11 +23,15 @@ class TestTranscriber(unittest.TestCase):
     def setUp(self):
         """Set up the test environment before each test."""
         with patch('whisper.load_model'):
-            self.transcriber = Transcriber(model_name="tiny")
+            import os
+            whisper_model = os.getenv("WHISPER_MODEL", "medium")
+            self.transcriber = Transcriber(model_name=whisper_model)
     
     def test_initialization(self):
         """Test that the Transcriber initializes correctly."""
-        self.assertEqual(self.transcriber.model_name, "tiny")
+        import os
+        whisper_model = os.getenv("WHISPER_MODEL", "medium")
+        self.assertEqual(self.transcriber.model_name, whisper_model)
         self.assertFalse(self.transcriber.is_loaded)
         self.assertFalse(self.transcriber.is_transcribing)
         self.assertIsNone(self.transcriber.model)
